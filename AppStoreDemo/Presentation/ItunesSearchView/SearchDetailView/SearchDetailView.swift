@@ -10,12 +10,11 @@ import SwiftUI
 struct SearchDetailView: View {
     let app: ItunesSearchResponseDTO
     @State private var isExpanded: Bool = false
-    @ObservedObject var downloadButtonState: DownloadButtonState
+    @Environment(\.injected) private var container: DIContainer
     
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // 앱 헤더
                 HStack(alignment: .top, spacing: 15) {
                     AsyncImage(url: URL(string: app.artworkUrl512)) { image in
                         image.resizable()
@@ -34,14 +33,15 @@ struct SearchDetailView: View {
                         Text(app.sellerName)
                             .font(.subheadline)
                             .foregroundColor(.gray)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         
                         DownloadButton(
-                            state: downloadButtonState,
+                            appId: app.bundleId,
                             title: "받기",
                             downloadDuration: 30.0,
-                            onDownloadStart: {},
-                            onDownloadPause: {},
-                            onDownloadComplete: {}
+                            appName: app.trackName,
+                            iconUrl: app.artworkUrl60
                         )
                         .padding(.top, 10)
                     }
@@ -49,11 +49,10 @@ struct SearchDetailView: View {
                     Spacer()
                 }
                 .padding(.horizontal)
-                
-                // 앱 정보 (가로 스크롤)
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 20) {
-                        InfoItem(title: "평점", value: "\(app.averageUserRating)")
+                        InfoItem(title: "평점", value: String(format: "%.1f", app.averageUserRating))
                         InfoItem(title: "연령", value: "\(app.contentAdvisoryRating )")
                         InfoItem(title: "카테고리", value: app.genres.first ?? "N/A")
                         InfoItem(title: "개발자", value: app.sellerName)
@@ -62,12 +61,11 @@ struct SearchDetailView: View {
                     .padding(.horizontal)
                 }
                 
-                // 스크린샷
                 if !app.screenshotUrls.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             ForEach(app.screenshotUrls, id: \.self) { url in
-                                NavigationLink(destination: ScreenshotDetailView(screenshotUrls: app.screenshotUrls, selectedUrl: url)) {
+                                NavigationLink(destination: ScreenshotDetailView(screenshotUrls: app.screenshotUrls, selectedUrl: url, app: app)) {
                                     AsyncImage(url: URL(string: url)) { image in
                                         image.resizable()
                                             .scaledToFit()
@@ -84,7 +82,6 @@ struct SearchDetailView: View {
                     }
                 }
                 
-                // 새로운 소식
                 VStack(alignment: .leading, spacing: 10) {
                     Text("새로운 소식")
                         .font(.title3)
@@ -109,7 +106,6 @@ struct SearchDetailView: View {
                 }
                 .padding(.horizontal)
                 
-                // 설명
                 VStack(alignment: .leading, spacing: 10) {
                     Text("설명")
                         .font(.title3)
@@ -126,20 +122,23 @@ struct SearchDetailView: View {
         .navigationTitle(app.trackName)
         .navigationBarTitleDisplayMode(.inline)
     }
+    
+    
 }
-
 struct InfoItem: View {
     let title: String
     let value: String
     
     var body: some View {
         VStack {
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.bold)
             Text(title)
                 .font(.caption)
                 .foregroundColor(.gray)
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.bold)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .frame(width: 80, alignment: .center)
     }
@@ -148,12 +147,12 @@ struct InfoItem: View {
 struct ScreenshotDetailView: View {
     let screenshotUrls: [String]
     let selectedUrl: String
+    let app: ItunesSearchResponseDTO
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.injected) private var container: DIContainer
     
     var body: some View {
         ZStack {
-            Color.black.edgesIgnoringSafeArea(.all)
-            
             TabView(selection: Binding(
                 get: { selectedUrl },
                 set: { _ in }
@@ -171,25 +170,31 @@ struct ScreenshotDetailView: View {
                 }
             }
             .tabViewStyle(PageTabViewStyle())
-            .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .always))
-            
-            // 닫기 버튼
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: {
-                        dismiss()
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                    }
-                    .padding()
+            .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .never))
+        }
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    dismiss()
+                }) {
+                    Text("완료")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.primary)
                 }
-                Spacer()
+            }
+            
+            ToolbarItem(placement: .navigationBarTrailing) {
+                DownloadButton(
+                    appId: app.bundleId,
+                    title: "받기",
+                    downloadDuration: 30.0,
+                    appName: app.trackName,
+                    iconUrl: app.artworkUrl60
+                )
+                .scaleEffect(0.85)
             }
         }
-        .edgesIgnoringSafeArea(.all)
     }
 }
 

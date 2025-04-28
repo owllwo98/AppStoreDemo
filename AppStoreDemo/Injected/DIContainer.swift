@@ -12,7 +12,7 @@ struct DIContainer: EnvironmentKey {
     let appState: Store<AppState>
     let interactors: Interactors
     let services: Services
-    let cancelBag: CancelBag 
+    let cancelBag: CancelBag
     
     init(appState: Store<AppState>,
          interactors: Interactors,
@@ -26,12 +26,29 @@ struct DIContainer: EnvironmentKey {
     
     static var defaultValue: Self { Self.default }
     
-    static let `default` = Self(
-        appState: .init(AppState()),
-        interactors: .default,
-        services: .init(),
-        cancelBag: CancelBag()
-    )
+    private static let sharedAppState = Store<AppState>(AppState())
+    
+    static let `default` = {
+        let appState = sharedAppState
+        let downloadRepository = DownloadRepositoryImpl()
+        
+        return Self(
+            appState: appState,
+            interactors: .init(
+                itunesSearchInteractor: ItunesSearchInteractorImpl(
+                    appState: appState,
+                    itunesSearchRepository: ItunesSearchRepositoryImpl()
+                ),
+                networkInteractor: AppNetworkInteractorImpl(),
+                downloadInteractor: AppDownloadInteractorImpl(
+                    appState: appState,
+                    downloadRepository: downloadRepository
+                )
+            ),
+            services: .init(networkService: NetworkStatusServiceImpl()),
+            cancelBag: CancelBag()
+        )
+    }()
 }
 
 extension EnvironmentValues {
@@ -40,58 +57,10 @@ extension EnvironmentValues {
         set { self[DIContainer.self] = newValue }
     }
 }
+
 extension View {
     func inject(_ container: DIContainer) -> some View {
         environment(\.injected, container)
-    }
-}
-
-typealias Store<State> = CurrentValueSubject<State, Never>
-
-extension Store {
-    
-    subscript<T>(keyPath: WritableKeyPath<Output, T>) -> T where T: Equatable {
-        get { value[keyPath: keyPath] }
-        set {
-            var value = self.value
-            if value[keyPath: keyPath] != newValue {
-                value[keyPath: keyPath] = newValue
-                self.value = value
-            }
-        }
-    }
-    
-    func bulkUpdate(_ update: (inout Output) -> Void) {
-        var value = self.value
-        update(&value)
-        self.value = value
-    }
-    
-    func updates<Value>(for keyPath: KeyPath<Output, Value>) ->
-    AnyPublisher<Value, Failure> where Value: Equatable {
-        return map(keyPath).removeDuplicates().eraseToAnyPublisher()
-    }
-}
-
-extension Binding where Value: Equatable {
-    func dispatched<State>(to state: Store<State>,
-                           _ keyPath: WritableKeyPath<State, Value>) -> Self {
-        return onSet { state[keyPath] = $0 }
-    }
-}
-
-extension Binding where Value: Equatable {
-    typealias ValueClosure = (Value) -> Void
-    
-    func onSet(_ perform: @escaping ValueClosure) -> Self {
-        return .init(get: { () -> Value in
-            self.wrappedValue
-        }, set: { value in
-            if self.wrappedValue != value {
-                self.wrappedValue = value
-            }
-            perform(value)
-        })
     }
 }
 
@@ -99,18 +68,15 @@ extension Binding where Value: Equatable {
 extension DIContainer {
     struct Interactors {
         let itunesSearchInteractor: ItunesSearchInteractor
-        let networkInteractor: AppNetworkInteractor // 수정
+        let networkInteractor: AppNetworkInteractor
+        let downloadInteractor: AppDownloadInteractor
 
-        init(itunesSearchInteractor: ItunesSearchInteractor, networkInteractor: AppNetworkInteractor = AppNetworkInteractorImpl()) {
+        init(itunesSearchInteractor: ItunesSearchInteractor,
+             networkInteractor: AppNetworkInteractor = AppNetworkInteractorImpl(),
+             downloadInteractor: AppDownloadInteractor) {
             self.itunesSearchInteractor = itunesSearchInteractor
             self.networkInteractor = networkInteractor
+            self.downloadInteractor = downloadInteractor
         }
-
-        static let `default` = Self(
-            itunesSearchInteractor: ItunesSearchInteractorImpl(
-                appState: Store<AppState>(AppState()),
-                itunesSearchRepository: ItunesSearchRepositoryImpl()
-            )
-        )
     }
 }

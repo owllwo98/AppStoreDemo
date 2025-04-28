@@ -16,6 +16,7 @@ private struct PointBorderText: ViewModifier {
             .background(
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(Color.blue, lineWidth: 1)
+                    .fill(.customGray)
             )
             .padding(2)
     }

@@ -9,35 +9,39 @@ import SwiftUI
 import Combine
 
 struct DownloadButton: View {
-    @ObservedObject var state: DownloadButtonState
+    let appId: String
     let title: String
     let downloadDuration: Double
-    let onDownloadStart: () -> Void
-    let onDownloadPause: () -> Void
-    let onDownloadComplete: () -> Void
     
+    var appName: String?
+    var iconUrl: String?
+    
+    @Environment(\.injected) private var container: DIContainer
     @Environment(\.scenePhase) private var scenePhase
+    
+    @State private var downloadState: AppState.DownloadsState.AppDownload.DownloadState = .idle
     @State private var downloadProgress: Double = 0.0
-    @State private var startTime: Date?
-    @State private var pauseTime: Date?
     
-    private let userDefaults = UserDefaults.standard
+    @State private var isDownloadRequested: Bool = false
+    @State private var isPauseRequested: Bool = false
+    @State private var isResumeRequested: Bool = false
     
-    enum DownloadState: String {
-        case idle
-        case downloading
-        case paused
-        case completed
-    }
+    var cancelBag = CancelBag()
     
     var body: some View {
         Group {
-            switch state.downloadState {
+            switch downloadState {
             case .idle:
                 Text(title)
                     .wrapToButton {
-                        startDownload()
-                        onDownloadStart()
+                        isDownloadRequested = true
+                        downloadState = .downloading
+                        downloadProgress = 0.0
+                        
+                        container.interactors.downloadInteractor.startDownload(
+                            appId: appId,
+                            duration: downloadDuration
+                        )
                     }
                     .asPointBorderText()
                 
@@ -60,144 +64,118 @@ struct DownloadButton: View {
                 }
                 .frame(width: 30, height: 30)
                 .wrapToButton {
-                    pauseDownload()
-                    onDownloadPause()
+                    isPauseRequested = true
+                    downloadState = .paused
+                    
+                    container.interactors.downloadInteractor.pauseDownload(appId: appId)
                 }
                 
             case .paused:
-                Text("재개")
-                    .wrapToButton {
-                        resumeDownload()
-                        onDownloadStart()
-                    }
-                    .asPointBorderText()
+                HStack(spacing: 4) {
+                    Image(systemName: "icloud.and.arrow.down")
+                        .font(.system(size: 14))
+                    Text("재개")
+                }
+                .wrapToButton {
+                    isResumeRequested = true
+                    downloadState = .downloading
+                    
+                    container.interactors.downloadInteractor.resumeDownload(
+                        appId: appId,
+                        duration: downloadDuration
+                    )
+                }
+                .asPointBorderText()
                 
             case .completed:
                 Text("열기")
                     .wrapToButton {
-                        onDownloadComplete()
+                        print("앱 열기: \(appId)")
                     }
                     .asPointBorderText()
+            case .redownload:
+                HStack(spacing: 4) {
+                    Image(systemName: "icloud.and.arrow.down")
+                        .font(.system(size: 14))
+                }
+                .wrapToButton {
+                    isDownloadRequested = true
+                    downloadState = .downloading
+                    downloadProgress = 0.0
+                    
+                    saveAppInfo()
+                    
+                    container.interactors.downloadInteractor.startDownload(
+                        appId: appId,
+                        duration: downloadDuration
+                    )
+                }
+                .asPointBorderText()
             }
         }
         .onAppear {
-            restoreDownloadState()
+            subscribeToStateChanges()
         }
-        .onChange(of: scenePhase) { newPhase in
-            switch newPhase {
-            case .active:
-                updateProgressOnForeground()
-            case .background:
-                saveDownloadState()
-            case .inactive:
-                break
-            @unknown default:
-                break
+        .onDisappear {
+            cancelBag.cancel()
+        }
+        .onChange(of: scenePhase) { newPhase, _ in
+            if newPhase == .active {
+                updateFromAppState()
             }
         }
     }
     
-    private func startDownload() {
-        state.downloadState = .downloading
-        startTime = Date()
-        downloadProgress = 0.0
-        updateProgress()
-        saveDownloadState()
-    }
-    
-    private func pauseDownload() {
-        state.downloadState = .paused
-        pauseTime = Date()
-        saveDownloadState()
-    }
-    
-    private func resumeDownload() {
-        guard let pause = pauseTime, let start = startTime else { return }
-        let pausedDuration = pause.timeIntervalSince(start)
-        startTime = Date().addingTimeInterval(-pausedDuration)
-        state.downloadState = .downloading
-        updateProgress()
-        saveDownloadState()
-    }
-    
-    private func updateProgress() {
-        guard state.downloadState == .downloading, let start = startTime else { return }
+    private func subscribeToStateChanges() {
+        updateFromAppState()
         
-        let elapsedTime = Date().timeIntervalSince(start)
-        downloadProgress = min(elapsedTime / downloadDuration, 1.0)
-        
-        if downloadProgress < 1.0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                updateProgress()
+        container.appState
+            .updates(for: \.downloads.appDownloads)
+            .sink { appDownloads in
+                if let download = appDownloads[appId] {
+                    let previousState = downloadState
+                    
+                    downloadState = download.state
+                    downloadProgress = download.progress
+                    
+                    if previousState != .completed && download.state == .completed {
+                        saveAppInfo()
+                    }
+                }
+            }
+            .store(in: cancelBag)
+    }
+    
+    private func saveAppInfo() {
+        if let appName = appName, let iconUrl = iconUrl {
+            container.interactors.downloadInteractor.saveAppInfo(
+                appId: appId,
+                appName: appName,
+                iconUrl: iconUrl
+            )
+        }
+    }
+    
+    private func updateFromAppState() {
+        if let download = container.interactors.downloadInteractor.getDownloadState(for: appId) {
+            downloadState = download.state
+            downloadProgress = download.progress
+            
+            if download.state == .completed {
+                saveAppInfo()
             }
         } else {
-            state.downloadState = .completed
-            startTime = nil
-            pauseTime = nil
-            onDownloadComplete()
-            saveDownloadState()
-        }
-    }
-    
-    private func updateProgressOnForeground() {
-        guard state.downloadState == .downloading || state.downloadState == .paused, let start = startTime else { return }
-        
-        let elapsedTime = Date().timeIntervalSince(start)
-        downloadProgress = min(elapsedTime / downloadDuration, 1.0)
-        
-        if downloadProgress >= 1.0 {
-            state.downloadState = .completed
-            startTime = nil
-            pauseTime = nil
-            onDownloadComplete()
-            saveDownloadState()
-        } else if state.downloadState == .downloading {
-            updateProgress()
-        }
-    }
-    
-    private func saveDownloadState() {
-        userDefaults.set(state.downloadState.rawValue, forKey: "downloadState_\(state.identifier)")
-        if let start = startTime {
-            userDefaults.set(start.timeIntervalSince1970, forKey: "startTime_\(state.identifier)")
-        }
-        if let pause = pauseTime {
-            userDefaults.set(pause.timeIntervalSince1970, forKey: "pauseTime_\(state.identifier)")
-        }
-        userDefaults.set(downloadProgress, forKey: "downloadProgress_\(state.identifier)")
-    }
-    
-    private func restoreDownloadState() {
-        if let savedState = userDefaults.string(forKey: "downloadState_\(state.identifier)"),
-           let restoredState = DownloadState(rawValue: savedState) {
-            state.downloadState = restoredState
-        } else {
-            state.downloadState = .idle // 상태가 없으면 초기화
-        }
-        
-        if let startTimestamp = userDefaults.object(forKey: "startTime_\(state.identifier)") as? Double {
-            startTime = Date(timeIntervalSince1970: startTimestamp)
-        }
-        
-        if let pauseTimestamp = userDefaults.object(forKey: "pauseTime_\(state.identifier)") as? Double {
-            pauseTime = Date(timeIntervalSince1970: pauseTimestamp)
-        }
-        
-        downloadProgress = userDefaults.double(forKey: "downloadProgress_\(state.identifier)")
-        
-        if state.downloadState == .downloading || state.downloadState == .paused {
-            updateProgressOnForeground()
+            if container.interactors.downloadInteractor.checkPreviouslyDownloaded(appId: appId) {
+                downloadState = .redownload
+            } else {
+                downloadState = .idle
+            }
+            downloadProgress = 0.0
         }
     }
 }
 
 
-class DownloadButtonState: ObservableObject {
-    @Published var downloadState: DownloadButton.DownloadState
-    let identifier: String
-    
-    init(identifier: String, initialState: DownloadButton.DownloadState = .idle) {
-        self.identifier = identifier
-        self.downloadState = initialState
-    }
-}
+
+
+

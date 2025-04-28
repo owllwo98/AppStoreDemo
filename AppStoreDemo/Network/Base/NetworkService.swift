@@ -30,7 +30,7 @@ struct NetworkService: NetworkProtocol {
         let request = configRequest(url: url, endpoint: endpoint)
         let (data, response) = try await session.data(for: request)
         if let responseString = String(data: data, encoding: .utf8) {
-            print("📍 Response body: \(responseString)")
+            print("Response body: \(responseString)")
         }
         return try processResponse(data: data, response: response)
     }

@@ -7,11 +7,11 @@
 
 import SwiftUI
 import Combine
-import Network // 네트워크 상태를 모니터링하기 위해 Network 프레임워크 사용
+import Network
 
-// 앱 상태를 정의하는 구조체
 struct AppState: Equatable {
     var network = NetworkStatus()
+    var downloads = DownloadsState()
     
     struct NetworkStatus: Equatable {
         var connection: Connection = .disconnected
@@ -31,6 +31,105 @@ struct AppState: Equatable {
             }
         }
     }
+    
+    struct DownloadsState: Equatable {
+        // 앱별 다운로드 상태를 저장하는 딕셔너리
+        var appDownloads: [String: AppDownload] = [:]
+        
+        // 설치된 앱 정보를 저장하는 딕셔너리
+        var installedApps: [String: InstalledAppInfo] = [:]
+        
+        struct AppDownload: Equatable {
+            var state: DownloadState = .idle
+            var progress: Double = 0.0
+            var startTime: Date?
+            var pauseTime: Date?
+            
+            enum DownloadState: String, Equatable {
+                case idle     
+                case downloading
+                case paused
+                case completed
+                case redownload
+            }
+        }
+        
+        // 설치된 앱 정보를 저장하는 구조체
+        struct InstalledAppInfo: Equatable, Codable {
+            var appId: String          // 앱 ID (번들 ID)
+            var appName: String        // 앱 이름
+            var iconUrl: String        // 앱 아이콘 URL
+            var installedDate: Date    // 설치 날짜
+        }
+        
+        // 다운로드 시작
+        mutating func startDownload(for appId: String) {
+            var appDownload = appDownloads[appId] ?? AppDownload()
+            appDownload.state = .downloading
+            appDownload.startTime = Date()
+            appDownload.progress = 0.0
+            appDownload.pauseTime = nil
+            appDownloads[appId] = appDownload
+        }
+        
+        // 다운로드 일시정지
+        mutating func pauseDownload(for appId: String) {
+            guard var appDownload = appDownloads[appId] else { return }
+            appDownload.state = .paused
+            appDownload.pauseTime = Date()
+            appDownloads[appId] = appDownload
+        }
+        
+        // 다운로드 재개
+        mutating func resumeDownload(for appId: String) {
+            guard var appDownload = appDownloads[appId],
+                  let pause = appDownload.pauseTime,
+                  let start = appDownload.startTime else { return }
+            
+            // 일시정지된 시간을 고려하여 시작 시간 조정
+            let pausedDuration = pause.timeIntervalSince(start)
+            appDownload.startTime = Date().addingTimeInterval(-pausedDuration)
+            appDownload.state = .downloading
+            appDownload.pauseTime = nil
+            appDownloads[appId] = appDownload
+        }
+        
+        // 진행 상태 업데이트
+        mutating func updateProgress(for appId: String, progress: Double) {
+            guard var appDownload = appDownloads[appId] else { return }
+            appDownload.progress = progress
+            
+            // 다운로드 완료 처리
+            if progress >= 1.0 {
+                appDownload.state = .completed
+                appDownload.progress = 1.0
+                appDownload.startTime = nil
+                appDownload.pauseTime = nil
+            }
+            
+            appDownloads[appId] = appDownload
+        }
+        
+        // 명시적으로 다운로드 완료 처리
+        mutating func completeDownload(for appId: String) {
+            guard var appDownload = appDownloads[appId] else { return }
+            appDownload.state = .completed
+            appDownload.progress = 1.0
+            appDownload.startTime = nil
+            appDownload.pauseTime = nil
+            appDownloads[appId] = appDownload
+        }
+        
+        // 설치된 앱 정보 저장
+        mutating func saveInstalledAppInfo(appInfo: InstalledAppInfo) {
+            installedApps[appInfo.appId] = appInfo
+        }
+        
+        // 설치된 앱 정보 삭제
+        mutating func removeInstalledAppInfo(appId: String) {
+            installedApps.removeValue(forKey: appId)
+        }
+    }
 }
 
 // MARK: - AppStore
@@ -41,7 +140,9 @@ final class AppStore: ObservableObject {
         self.container = container
         setup()
     }
-    
+}
+
+extension AppStore {
     private func setup() {
         // 네트워크 상태 바인딩
         container.interactors.networkInteractor.bindNetworkStatus(
@@ -53,12 +154,15 @@ final class AppStore: ObservableObject {
         // 네트워크 모니터링 시작
         container.services.networkService.startMonitoring()
         
+        // 다운로드 상태 복원
+        container.interactors.downloadInteractor.restoreAllDownloadStates()
+        
         // SwiftUI와 Combine 연동
         container.appState
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
-            .store(in: container.cancelBag) // CancelBag 사용
+            .store(in: container.cancelBag)
     }
 }
 
@@ -119,96 +223,6 @@ struct AppNetworkInteractorImpl: AppNetworkInteractor {
                     state.network = status
                 }
             }
-            .store(in: cancelBag) // 수정: AppStore. -> cancelBag
+            .store(in: cancelBag)
     }
-}
-
-final class CancelBag {
-    fileprivate(set) var subscriptions = Set<AnyCancellable>()
-    private let equalToAny: Bool
-    
-    init(equalToAny: Bool = false) {
-        self.equalToAny = equalToAny
-    }
-    
-    func cancel() {
-        subscriptions.removeAll()
-    }
-    
-    func isEqual(to other: CancelBag) -> Bool {
-        return other === self || other.equalToAny || self.equalToAny
-    }
-}
-
-extension AnyCancellable {
-    
-    func store(in cancelBag: CancelBag) {
-        cancelBag.subscriptions.insert(self)
-    }
-}
-
-
-
-
-
-typealias LoadableSubject<Value> = Binding<Loadable<Value>>
-
-enum Loadable<T> {
-    case notRequest
-    case loading
-    case success(T)
-    case error(NetworkError)
-
-    var value: T? {
-        switch self {
-        case let .success(value): return value
-        default: return nil
-        }
-    }
-    
-    mutating func setLoading() {
-        self = .loading
-    }
-    
-    mutating func setSuccess(value: T) {
-        self = .success(value)
-    }
-    
-    mutating func setError(error: NetworkError) {
-        self = .error(error)
-    }
-}
-
-extension Loadable {
-    // 로딩 상태 확인용
-    var isLoading: Bool {
-        if case .loading = self { return true }
-        return false
-    }
-    
-    // 에러 상태 확인용
-    var isError: Bool {
-        if case .error = self { return true }
-        return false
-    }
-}
-
-/// Loadable 타입 소거 구조체
-/// 각 제네릭 타입에 대응하기 위해 타입 소거하고, 상타값만 전달하는 방식으로 지정
-/// - NetworkStateView에서는 값 상관없이 해당 상태만 관측하면 되기에 해당 방식 이용
-/// - 각 제네릭 타입에 대응하기 위한 수단
-struct AnyLoadable {
-    private let _isLoading: () -> Bool
-    private let _isError: () -> Bool
-    private let _setNotRequest: () -> Void
-
-    init<T>(_ loadable: Binding<Loadable<T>>) {
-        _isLoading = { loadable.wrappedValue.isLoading }
-        _isError = { loadable.wrappedValue.isError }
-        _setNotRequest = { loadable.wrappedValue = .notRequest }
-    }
-
-    var isLoading: Bool { _isLoading() }
-    var isError: Bool { _isError() }
-    func setNotRequest() { _setNotRequest() }
 }
