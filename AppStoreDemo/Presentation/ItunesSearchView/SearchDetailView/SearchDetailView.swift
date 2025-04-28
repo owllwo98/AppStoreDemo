@@ -58,6 +58,7 @@ struct SearchDetailView: View {
                         InfoItem(title: "개발자", value: app.sellerName)
                         InfoItem(title: "버전", value: app.version)
                     }
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal)
                 }
                 
@@ -140,7 +141,7 @@ struct InfoItem: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .frame(width: 80, alignment: .center)
+        .frame(minWidth: 100, maxWidth: .infinity, alignment: .center)
     }
 }
 
